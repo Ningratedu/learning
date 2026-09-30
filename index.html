@@ -3707,22 +3707,69 @@ function findUserForEmployee(emp){
   if(!uname)return null;
   return (window.STATE.users||[]).find(u=>normalizeUsername(u.username)===uname)||null
 }
-window.legacyCompleteState={q:"",dept:"",mode:"both",selected:new Set()};
+window.legacyCompleteState={q:"",dept:"",batch:"",mode:"both",selected:new Set()};
 function legacyModeLabel(mode){
   if(mode==="onboarding")return"Training Onboarding";
   if(mode==="tna")return"Training TNA";
   return"Training Onboarding & Training TNA"
 }
 window.legacySetMode=function(mode){
-  window.legacyCompleteState.mode=["onboarding","tna","both"].includes(mode)?mode:"both";
+  const st=window.legacyCompleteState;
+  st.mode=["onboarding","tna","both"].includes(mode)?mode:"both";
+  if(st.mode!=="onboarding")st.batch="";
+  st.limit=100;
   renderLegacyCompletePage()
 };
+const LEGACY_MONTHS=["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+function legacyBatchIndex(){
+  const S=window.STATE;
+  let cfg="";
+  try{cfg=((window.onboardingScheduleConfig&&window.onboardingScheduleConfig().salesMarketingDepts)||[]).join("|")}catch(err){}
+  const emps=S.employees||[];
+  let c=window.__legacyBatchCache;
+  if(c&&c.emps===S.employees&&c.len===emps.length&&c.cfg===cfg)return c;
+  const byEmp=new Map(),groups=new Map();let noneCount=0;
+  emps.forEach(e=>{
+    let b=null;try{b=window.onboardingBatchFor(e)}catch(err){}
+    byEmp.set(e,b);
+    if(e.tglResign)return;
+    if(!b){noneCount++;return}
+    let g=groups.get(b.key);if(!g){g={key:b.key,batch:b,count:0};groups.set(b.key,g)}
+    g.count++
+  });
+  c=window.__legacyBatchCache={emps:S.employees,len:emps.length,cfg:cfg,byEmp:byEmp,noneCount:noneCount,list:Array.from(groups.values()).sort((a,b)=>a.batch.start-b.batch.start)};
+  return c
+}
+function legacyBatchOf(e){
+  const idx=legacyBatchIndex();
+  if(idx.byEmp.has(e))return idx.byEmp.get(e);
+  let b=null;try{b=window.onboardingBatchFor(e)}catch(err){}
+  return b
+}
+function legacyBatchLabel(b){
+  return`${b.isSalesMarketing?"Sales & Marketing":"Dept Lain"} • ${b.windowLabel} • ${window.fmtDate(b.start)}–${window.fmtDate(b.deadline)}`
+}
+function legacyBatchOptionsHtml(selected){
+  const idx=legacyBatchIndex();
+  const months=new Map();
+  idx.list.forEach(g=>{
+    const s=g.batch.start;const k=s.getFullYear()*100+s.getMonth();
+    if(!months.has(k))months.set(k,{y:s.getFullYear(),m:s.getMonth(),items:[]});
+    months.get(k).items.push(g)
+  });
+  const groupsHtml=Array.from(months.entries()).sort((a,b)=>b[0]-a[0]).map(([k,gr])=>
+    `<optgroup label="${LEGACY_MONTHS[gr.m]} ${gr.y}">${gr.items.map(g=>`<option value="${window.escapeHtml(g.key)}" ${selected===g.key?"selected":""}>${window.escapeHtml(legacyBatchLabel(g.batch))} (${g.count})</option>`).join("")}</optgroup>`
+  ).join("");
+  const noneHtml=idx.noneCount?`<option value="__none__" ${selected==="__none__"?"selected":""}>Tanpa tanggal bergabung (${idx.noneCount})</option>`:"";
+  return`<option value="">Semua Batch</option>${groupsHtml}${noneHtml}`
+}
 function legacyEligibleEmployees(){
   const employees=(window.STATE.employees||[]).filter(e=>!e.tglResign);
   const st=window.legacyCompleteState;
   const q=st.q.trim().toLowerCase();
   return employees.filter(e=>{
     if(st.dept&&(e.dept||"")!==st.dept)return false;
+    if(st.mode==="onboarding"&&st.batch){const bk=legacyBatchOf(e);if((bk?bk.key:"__none__")!==st.batch)return false}
     if(q&&![e.nama,e.username,e.dept,e.posisi].some(v=>String(v||"").toLowerCase().includes(q)))return false;
     return true
   }).sort((a,b)=>String(a.nama||a.username||"").localeCompare(String(b.nama||b.username||"")))
@@ -3857,6 +3904,7 @@ function legacyRowData(e){
   r={user:user,stats:{courses:courses.length,courseDone:cd,trainings:trainings.length,trainingDone:td}};
   c.rows.set(e,r);return r
 }
+function legacyBatchRowSafe(e){try{return legacyRowData(e)}catch(err){return null}}
 window.legacyShowMore=function(){const st=window.legacyCompleteState;st.limit=(st.limit||100)+100;renderLegacyCompletePage()};
 function renderLegacyCompletePage(){
   const employees=legacyEligibleEmployees();
@@ -3875,11 +3923,13 @@ function renderLegacyCompletePage(){
     const unameEsc=window.escapeHtml(e.username||"").replace(/'/g,"\\'");
     const onboardingColCls=mode==="tna"?"text-slate-300":"text-slate-600";
     const tnaColCls=mode==="onboarding"?"text-slate-300":"text-slate-600";
+    const batchCell=mode==="onboarding"?(()=>{const b=legacyBatchOf(e);return`<td class="px-2 py-2 text-[10px] text-slate-500 whitespace-nowrap">${b?`<span class="font-bold text-slate-600">${b.isSalesMarketing?"Sales & Marketing":"Dept Lain"} • ${window.escapeHtml(b.windowLabel)}</span><br>${window.fmtDate(b.start)}–${window.fmtDate(b.deadline)}<br><span class="text-slate-400">Join ${window.fmtDate(e.tglBergabung)}</span>`:'<span class="text-slate-300">-</span>'}</td>`})():"";
     return`<tr class="border-b border-slate-50 hover:bg-slate-50/60">
       <td class="px-2 py-2 text-center"><input type="checkbox" ${checked?"checked":""} ${user?"":"disabled"} onchange="window.legacyToggleSelect('${unameEsc}')" class="accent-indigo-600"></td>
       <td class="px-2 py-2"><p class="font-bold text-slate-700 text-[12px]">${window.escapeHtml(e.nama||e.username||"-")}</p><p class="text-[10px] text-slate-400">${window.escapeHtml(e.username||"-")}</p></td>
       <td class="px-2 py-2 text-[11px] text-slate-600">${window.escapeHtml(e.dept||"-")}</td>
       <td class="px-2 py-2 text-[11px] text-slate-600">${window.escapeHtml(e.designation||e.posisi||"-")}</td>
+      ${batchCell}
       <td class="px-2 py-2 text-center">${user?'<span class="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">Ada Akun</span>':'<span class="text-[9px] font-black px-2 py-0.5 rounded-full bg-rose-50 text-rose-500">Belum Ada Akun</span>'}</td>
       <td class="px-2 py-2 text-center text-[11px] font-bold ${onboardingColCls}">${stats.courseDone}/${stats.courses}</td>
       <td class="px-2 py-2 text-center text-[11px] font-bold ${tnaColCls}">${stats.trainingDone}/${stats.trainings}</td>
@@ -3888,6 +3938,13 @@ function renderLegacyCompletePage(){
     </tr>`
   }).join("");
   const selectedCount=employees.filter(e=>st.selected.has(normalizeUsername(e.username))).length;
+  let batchInfoHtml="";
+  if(mode==="onboarding"&&st.batch){
+    let withAcc=0,doneCnt=0;
+    employees.forEach(e=>{const rd=legacyBatchRowSafe(e);if(rd&&rd.user){withAcc++;if(rd.stats.courses>0&&rd.stats.courseDone===rd.stats.courses)doneCnt++}});
+    batchInfoHtml=`<div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 text-[11px] text-indigo-700 bg-indigo-50/70 border border-indigo-100 rounded-xl px-3 py-2"><i class="fas fa-users-rectangle"></i><span>Batch terpilih: <b>${employees.length}</b> karyawan</span><span>• <b>${withAcc}</b> punya akun</span><span>• <b>${doneCnt}</b> sudah tuntas onboarding</span><span class="text-indigo-500/80">Centang kotak di header tabel untuk memilih semua karyawan di batch ini.</span></div>`
+  }
+  const colSpan=mode==="onboarding"?10:9;
   const modeTabBtn=(val,icon,label)=>`<button type="button" onclick="window.legacySetMode('${val}')" class="flex items-center gap-1 text-[10px] sm:text-[11px] font-bold px-2.5 py-1.5 rounded-lg transition ${mode===val?"bg-indigo-500 shadow text-white":"text-indigo-500 hover:text-indigo-600 hover:bg-white/60"}"><i class="fas ${icon} text-[9px]"></i> ${label}</button>`;
   window.setPage(`
     <div class="mb-3">
@@ -3904,9 +3961,11 @@ function renderLegacyCompletePage(){
         <option value="">Semua Departemen</option>
         ${depts.map(d=>`<option value="${window.escapeHtml(d)}" ${st.dept===d?"selected":""}>${window.escapeHtml(d)}</option>`).join("")}
       </select>
+      ${mode==="onboarding"?`<select onchange="window.legacySetFilter('batch',this.value)" title="Filter batch onboarding" class="text-xs font-bold border border-violet-200 bg-violet-50/50 text-violet-700 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-violet-300 max-w-[22rem]">${legacyBatchOptionsHtml(st.batch)}</select>`:""}
       <input type="text" value="${window.escapeHtml(st.q)}" oninput="window.legacySetFilter('q',this.value)" placeholder="Cari nama / username..." class="text-xs border border-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-200 w-56">
       <button id="legacy-bulk-btn" onclick="window.legacyRunBulkComplete()" ${selectedCount?"":"disabled"} class="ml-auto bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2.5 rounded-2xl"><i class="fas fa-bolt mr-1"></i> Tuntaskan Terpilih (${selectedCount})</button>
     </div>
+    ${batchInfoHtml}
     <div id="legacy-table-scroll" class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-auto max-h-[70vh]">
       <table class="w-full text-left border-separate border-spacing-0">
         <thead class="text-[9px] font-black uppercase text-slate-400">
@@ -3915,6 +3974,7 @@ function renderLegacyCompletePage(){
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100">Karyawan</th>
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100">Departemen</th>
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100">Jabatan</th>
+            ${mode==="onboarding"?'<th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100">Batch Onboarding</th>':""}
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100 text-center">Akun</th>
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100 text-center">Onboarding</th>
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100 text-center">Training TNA</th>
@@ -3922,7 +3982,7 @@ function renderLegacyCompletePage(){
             <th class="sticky top-0 z-10 bg-slate-50 px-2 py-2 border-b border-slate-100 text-right">Aksi</th>
           </tr>
         </thead>
-        <tbody>${rows||'<tr><td colspan="9" class="text-center py-10 text-slate-400">Tidak ada karyawan yang cocok.</td></tr>'}${employees.length>(st.limit||100)?`<tr><td colspan="9" class="text-center py-3"><button type="button" onclick="window.legacyShowMore()" class="text-[11px] font-bold text-indigo-500 hover:text-indigo-700">Tampilkan 100 lagi (${Math.min(st.limit||100,employees.length)} dari ${employees.length})</button></td></tr>`:""}</tbody>
+        <tbody>${rows||'<tr><td colspan="${colSpan}" class="text-center py-10 text-slate-400">Tidak ada karyawan yang cocok.</td></tr>'}${employees.length>(st.limit||100)?`<tr><td colspan="${colSpan}" class="text-center py-3"><button type="button" onclick="window.legacyShowMore()" class="text-[11px] font-bold text-indigo-500 hover:text-indigo-700">Tampilkan 100 lagi (${Math.min(st.limit||100,employees.length)} dari ${employees.length})</button></td></tr>`:""}</tbody>
       </table>
     </div>
     <p class="text-[10px] text-slate-400 mt-3">Catatan: karyawan yang belum punya akun user tidak bisa dituntaskan — buat akunnya dulu lewat menu <b>Kelola Akun</b>. Fitur ini tidak menyentuh siklus Asesmen Kompetensi (360°); itu tetap dikelola lewat menu Siklus Asesmen.</p>`);
